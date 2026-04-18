@@ -4,8 +4,36 @@ let client = null;
 let targetInfo = null;
 const CDP_HOST = 'localhost';
 const CDP_PORT = 9222;
-const MAX_RETRIES = 5;
-const BASE_DELAY = 500;
+export const MAX_RETRIES = 5;
+export const BASE_DELAY = 500;
+const BACKOFF_CAP = 30000;
+
+/**
+ * Compute the backoff delay (ms) for an attempt using exponential strategy
+ * capped at BACKOFF_CAP. Attempt 0 → BASE_DELAY, attempt N → BASE_DELAY*2^N.
+ */
+export function computeBackoff(attempt, base = BASE_DELAY, cap = BACKOFF_CAP) {
+  return Math.min(base * Math.pow(2, attempt), cap);
+}
+
+/**
+ * Retry an async operation with exponential backoff, up to `maxRetries` times.
+ * `sleep` and `maxRetries` are injectable so this can be unit tested without
+ * real timers.
+ * Rejects with the last error, prefixed with `label`.
+ */
+export async function retryWithBackoff(op, { label = 'operation', maxRetries = MAX_RETRIES, sleep = (ms) => new Promise(r => setTimeout(r, ms)), base = BASE_DELAY, cap = BACKOFF_CAP } = {}) {
+  let lastError;
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      return await op(attempt);
+    } catch (err) {
+      lastError = err;
+      await sleep(computeBackoff(attempt, base, cap));
+    }
+  }
+  throw new Error(`${label} failed after ${maxRetries} attempts: ${lastError?.message}`);
+}
 
 // Known direct API paths discovered via live probing (see PROBE_RESULTS.md)
 const KNOWN_PATHS = {
@@ -62,29 +90,18 @@ export async function getClient() {
 }
 
 export async function connect() {
-  let lastError;
-  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-    try {
-      const target = await findChartTarget();
-      if (!target) {
-        throw new Error('No TradingView chart target found. Is TradingView open with a chart?');
-      }
-      targetInfo = target;
-      client = await CDP({ host: CDP_HOST, port: CDP_PORT, target: target.id });
-
-      // Enable required domains
-      await client.Runtime.enable();
-      await client.Page.enable();
-      await client.DOM.enable();
-
-      return client;
-    } catch (err) {
-      lastError = err;
-      const delay = Math.min(BASE_DELAY * Math.pow(2, attempt), 30000);
-      await new Promise(r => setTimeout(r, delay));
+  return retryWithBackoff(async () => {
+    const target = await findChartTarget();
+    if (!target) {
+      throw new Error('No TradingView chart target found. Is TradingView open with a chart?');
     }
-  }
-  throw new Error(`CDP connection failed after ${MAX_RETRIES} attempts: ${lastError?.message}`);
+    targetInfo = target;
+    client = await CDP({ host: CDP_HOST, port: CDP_PORT, target: target.id });
+    await client.Runtime.enable();
+    await client.Page.enable();
+    await client.DOM.enable();
+    return client;
+  }, { label: 'CDP connection' });
 }
 
 async function findChartTarget() {
