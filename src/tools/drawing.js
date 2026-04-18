@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { jsonResult } from './_format.js';
+import { wrapCall } from './_format.js';
 import * as core from '../core/drawing.js';
 
 export function registerDrawingTools(server) {
@@ -10,31 +10,26 @@ export function registerDrawingTools(server) {
     overrides: z.string().optional().describe('JSON string of style overrides (e.g., \'{"linecolor": "#ff0000", "linewidth": 2}\')'),
     text: z.string().optional().describe('Text content for text shapes'),
   }, async ({ shape, point, point2, overrides, text }) => {
-    try { return jsonResult(await core.drawShape({ shape, point, point2, overrides, text })); }
-    catch (err) { return jsonResult({ success: false, error: err.message }, true); }
+    return wrapCall(() => core.drawShape({ shape, point, point2, overrides, text }));
   });
 
   server.tool('draw_list', 'List all shapes/drawings on the chart', {}, async () => {
-    try { return jsonResult(await core.listDrawings()); }
-    catch (err) { return jsonResult({ success: false, error: err.message }, true); }
+    return wrapCall(() => core.listDrawings());
   });
 
   server.tool('draw_clear', 'Remove all drawings from the chart', {}, async () => {
-    try { return jsonResult(await core.clearAll()); }
-    catch (err) { return jsonResult({ success: false, error: err.message }, true); }
+    return wrapCall(() => core.clearAll());
   });
 
   server.tool('draw_remove_one', 'Remove a specific drawing by entity ID', {
     entity_id: z.string().describe('Entity ID of the drawing to remove (from draw_list)'),
   }, async ({ entity_id }) => {
-    try { return jsonResult(await core.removeOne({ entity_id })); }
-    catch (err) { return jsonResult({ success: false, error: err.message }, true); }
+    return wrapCall(() => core.removeOne({ entity_id }));
   });
 
   server.tool('draw_get_properties', 'Get properties and points of a specific drawing', {
     entity_id: z.string().describe('Entity ID of the drawing (from draw_list)'),
   }, async ({ entity_id }) => {
-    try { return jsonResult(await core.getProperties({ entity_id })); }
-    catch (err) { return jsonResult({ success: false, error: err.message }, true); }
+    return wrapCall(() => core.getProperties({ entity_id }));
   });
 }

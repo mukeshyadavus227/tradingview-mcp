@@ -4,6 +4,8 @@
  * They throw on error (callers catch and format).
  */
 import { evaluate, evaluateAsync, getClient } from '../connection.js';
+import { pineFacadeLimiter } from '../ratelimit.js';
+import { AuthError, RateLimitError } from '../errors.js';
 
 // ── Monaco finder (injected into TV page) ──
 const FIND_MONACO = `
@@ -184,6 +186,8 @@ export function analyze({ source }) {
 }
 
 export async function check({ source }) {
+  await pineFacadeLimiter.acquire();
+
   const formData = new URLSearchParams();
   formData.append('source', source);
 
@@ -200,6 +204,12 @@ export async function check({ source }) {
     }
   );
 
+  if (response.status === 401 || response.status === 403) {
+    throw new AuthError(`pine-facade returned ${response.status}`);
+  }
+  if (response.status === 429) {
+    throw new RateLimitError(`pine-facade rate-limited (429)`);
+  }
   if (!response.ok) {
     throw new Error(`TradingView API returned ${response.status}: ${response.statusText}`);
   }

@@ -6,22 +6,63 @@ import { waitForChartReady } from '../wait.js';
 import { writeFileSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { ensureReporter } from '../progress.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCREENSHOT_DIR = join(dirname(dirname(__dirname)), 'screenshots');
 
-export async function batchRun({ symbols, timeframes, action, delay_ms, ohlcv_count }) {
-  const tfs = timeframes && timeframes.length > 0 ? timeframes : [null];
+/**
+ * Enumerate the (symbol, timeframe) iteration plan for a batch run.
+ * Returns an array of {symbol, timeframe} pairs. Pure.
+ */
+export function buildBatchPlan(symbols, timeframes) {
+  if (!Array.isArray(symbols) || symbols.length === 0) return [];
+  const tfs = Array.isArray(timeframes) && timeframes.length > 0 ? timeframes : [null];
+  const plan = [];
+  for (const symbol of symbols) {
+    for (const timeframe of tfs) {
+      plan.push({ symbol, timeframe });
+    }
+  }
+  return plan;
+}
+
+/** Summarize batch results into success/failure counts. Pure. */
+export function summarizeBatchResults(results) {
+  const successful = results.filter(r => r.success).length;
+  return {
+    success: true,
+    total_iterations: results.length,
+    successful,
+    failed: results.length - successful,
+    results,
+  };
+}
+
+/** Build a batch screenshot filename like "batch_AAPL_5_2025-01-15T...". Pure. */
+export function buildBatchScreenshotName(symbol, timeframe, now = new Date()) {
+  const ts = now.toISOString().replace(/[:.]/g, '-');
+  const raw = `batch_${symbol}_${timeframe || 'default'}_${ts}`;
+  return raw.replace(/[\/\\]/g, '_') + '.png';
+}
+
+export async function batchRun({ symbols, timeframes, action, delay_ms, ohlcv_count, progress }) {
+  const plan = buildBatchPlan(symbols, timeframes);
   const delay = delay_ms || 2000;
   const results = [];
+  const reporter = ensureReporter(progress);
+  reporter.log(`batch starting: ${plan.length} iterations`);
 
   let colPath, apiPath;
   try { colPath = await getChartCollection(); } catch {}
   try { apiPath = await getChartApi(); } catch {}
 
-  for (const symbol of symbols) {
-    for (const tf of tfs) {
+  let step = 0;
+  for (const { symbol, timeframe: tf } of plan) {
+    {
       const combo = { symbol, timeframe: tf };
+      reporter.update(step / plan.length, `${symbol}${tf ? ` @ ${tf}` : ''}`);
+      step++;
       try {
         if (colPath) await evaluate(`${colPath}.setSymbol(${safeString(symbol)})`);
         else if (apiPath) await evaluate(`${apiPath}.setSymbol(${safeString(symbol)})`);
@@ -39,9 +80,7 @@ export async function batchRun({ symbols, timeframes, action, delay_ms, ohlcv_co
           mkdirSync(SCREENSHOT_DIR, { recursive: true });
           const client = await getClient();
           const { data } = await client.Page.captureScreenshot({ format: 'png' });
-          const ts = new Date().toISOString().replace(/[:.]/g, '-');
-          const fname = `batch_${symbol}_${tf || 'default'}_${ts}`.replace(/[\/\\]/g, '_') + '.png';
-          const filePath = join(SCREENSHOT_DIR, fname);
+          const filePath = join(SCREENSHOT_DIR, buildBatchScreenshotName(symbol, tf));
           writeFileSync(filePath, Buffer.from(data, 'base64'));
           actionResult = { file_path: filePath };
         } else if (action === 'get_ohlcv' && apiPath) {
@@ -81,6 +120,6 @@ export async function batchRun({ symbols, timeframes, action, delay_ms, ohlcv_co
     }
   }
 
-  const successCount = results.filter(r => r.success).length;
-  return { success: true, total_iterations: results.length, successful: successCount, failed: results.length - successCount, results };
+  reporter.update(1, 'done');
+  return summarizeBatchResults(results);
 }

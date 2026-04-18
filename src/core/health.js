@@ -171,11 +171,18 @@ export function tvCandidatePaths(platform, env = process.env) {
     darwin: [
       '/Applications/TradingView.app/Contents/MacOS/TradingView',
       `${env.HOME}/Applications/TradingView.app/Contents/MacOS/TradingView`,
+      // Homebrew Cask installs
+      '/opt/homebrew/Caskroom/tradingview/latest/TradingView.app/Contents/MacOS/TradingView',
+      '/usr/local/Caskroom/tradingview/latest/TradingView.app/Contents/MacOS/TradingView',
     ],
     win32: [
       `${env.LOCALAPPDATA}\\TradingView\\TradingView.exe`,
       `${env.PROGRAMFILES}\\TradingView\\TradingView.exe`,
       `${env['PROGRAMFILES(X86)']}\\TradingView\\TradingView.exe`,
+      // Microsoft Store (partial UWP layout)
+      `${env.LOCALAPPDATA}\\Packages\\TradingView.TradingViewDesktop_*\\LocalCache\\Local\\TradingView\\TradingView.exe`,
+      // Scoop
+      `${env.USERPROFILE}\\scoop\\apps\\tradingview\\current\\TradingView.exe`,
     ],
     linux: [
       '/opt/TradingView/tradingview',
@@ -183,6 +190,12 @@ export function tvCandidatePaths(platform, env = process.env) {
       `${env.HOME}/.local/share/TradingView/TradingView`,
       '/usr/bin/tradingview',
       '/snap/tradingview/current/tradingview',
+      // Flatpak
+      `${env.HOME}/.local/share/flatpak/app/com.tradingview.TradingView/current/active/files/bin/tradingview`,
+      '/var/lib/flatpak/app/com.tradingview.TradingView/current/active/files/bin/tradingview',
+      // AppImage common locations
+      `${env.HOME}/Applications/TradingView.AppImage`,
+      `${env.HOME}/Downloads/TradingView.AppImage`,
     ],
   };
   return pathMap[platform] || pathMap.linux;

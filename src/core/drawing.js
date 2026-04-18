@@ -2,16 +2,59 @@
  * Core drawing logic.
  */
 import { evaluate as _evaluate, getChartApi as _getChartApi, safeString, requireFinite } from '../connection.js';
+import { UserInputError } from '../errors.js';
 
 function _resolve(deps) {
   return { evaluate: deps?.evaluate || _evaluate, getChartApi: deps?.getChartApi || _getChartApi };
 }
 
+/**
+ * Keys legal in a drawing override payload. Anything else is dropped.
+ * Values are additionally constrained in sanitizeOverrides() below.
+ */
+const ALLOWED_OVERRIDE_KEYS = new Set([
+  'linecolor', 'linewidth', 'linestyle',
+  'bordercolor', 'borderwidth', 'borderstyle',
+  'backgroundColor', 'fillBackground', 'transparency',
+  'textcolor', 'fontsize', 'bold', 'italic',
+  'showLabel', 'horzLabelsAlign', 'vertLabelsAlign',
+  'extendLeft', 'extendRight', 'leftEnd', 'rightEnd',
+]);
+
+/**
+ * Whitelist override keys and coerce each value to a safe primitive.
+ * Prevents injection of arbitrary object graphs / functions into
+ * TradingView's shape-creation API.
+ */
+export function sanitizeOverrides(raw) {
+  if (raw == null) return {};
+  const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+  if (typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new UserInputError('overrides must be a JSON object');
+  }
+  const out = {};
+  for (const [k, v] of Object.entries(parsed)) {
+    if (!ALLOWED_OVERRIDE_KEYS.has(k)) continue;
+    if (v === null) continue;
+    const t = typeof v;
+    if (t === 'string') {
+      if (v.length > 64) continue; // keep payloads tight
+      out[k] = v;
+    } else if (t === 'number') {
+      if (Number.isFinite(v)) out[k] = v;
+    } else if (t === 'boolean') {
+      out[k] = v;
+    }
+    // objects, functions, arrays are dropped
+  }
+  return out;
+}
+
 export async function drawShape({ shape, point, point2, overrides: overridesRaw, text, _deps }) {
   const { evaluate, getChartApi } = _resolve(_deps);
-  const overrides = overridesRaw ? (typeof overridesRaw === 'string' ? JSON.parse(overridesRaw) : overridesRaw) : {};
+  const overrides = sanitizeOverrides(overridesRaw);
   const apiPath = await getChartApi();
-  const overridesStr = JSON.stringify(overrides || {});
+  const overridesStr = JSON.stringify(overrides);
   const textStr = text ? JSON.stringify(text) : '""';
 
   const p1time = requireFinite(point.time, 'point.time');

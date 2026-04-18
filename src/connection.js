@@ -1,4 +1,14 @@
 import CDP from 'chrome-remote-interface';
+import { ConnectionError, ConnectionLostError, classifyError } from './errors.js';
+import { onShutdown } from './shutdown.js';
+
+onShutdown('cdp-client', async () => {
+  if (client) {
+    try { await client.close(); } catch { /* ignore */ }
+    client = null;
+    targetInfo = null;
+  }
+});
 
 let client = null;
 let targetInfo = null;
@@ -120,21 +130,41 @@ export async function getTargetInfo() {
   return targetInfo;
 }
 
+/** Detect a disconnection-type error from chrome-remote-interface. */
+function isDisconnectError(err) {
+  const msg = err?.message || '';
+  return /WebSocket is not open|socket hang up|ECONNRESET|connection closed|ws closed|ECONNREFUSED/i.test(msg);
+}
+
 export async function evaluate(expression, opts = {}) {
-  const c = await getClient();
-  const result = await c.Runtime.evaluate({
-    expression,
-    returnByValue: true,
-    awaitPromise: opts.awaitPromise ?? false,
-    ...opts,
-  });
-  if (result.exceptionDetails) {
-    const msg = result.exceptionDetails.exception?.description
-      || result.exceptionDetails.text
-      || 'Unknown evaluation error';
-    throw new Error(`JS evaluation error: ${msg}`);
+  // First attempt. If the socket died underneath us, drop the client cache
+  // and retry exactly once before bubbling the error up. This makes the
+  // CLI and MCP tools self-healing across a TradingView restart.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const c = await getClient();
+      const result = await c.Runtime.evaluate({
+        expression,
+        returnByValue: true,
+        awaitPromise: opts.awaitPromise ?? false,
+        ...opts,
+      });
+      if (result.exceptionDetails) {
+        const msg = result.exceptionDetails.exception?.description
+          || result.exceptionDetails.text
+          || 'Unknown evaluation error';
+        throw new Error(`JS evaluation error: ${msg}`);
+      }
+      return result.result?.value;
+    } catch (err) {
+      if (attempt === 0 && isDisconnectError(err)) {
+        client = null;
+        targetInfo = null;
+        continue;
+      }
+      throw attempt === 0 ? err : new ConnectionLostError(err.message, { cause: err });
+    }
   }
-  return result.result?.value;
 }
 
 export async function evaluateAsync(expression) {
