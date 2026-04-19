@@ -2,16 +2,59 @@
  * Core drawing logic.
  */
 import { evaluate as _evaluate, getChartApi as _getChartApi, safeString, requireFinite } from '../connection.js';
+import { UserInputError } from '../errors.js';
 
 function _resolve(deps) {
   return { evaluate: deps?.evaluate || _evaluate, getChartApi: deps?.getChartApi || _getChartApi };
 }
 
+/**
+ * Keys legal in a drawing override payload. Anything else is dropped.
+ * Values are additionally constrained in sanitizeOverrides() below.
+ */
+const ALLOWED_OVERRIDE_KEYS = new Set([
+  'linecolor', 'linewidth', 'linestyle',
+  'bordercolor', 'borderwidth', 'borderstyle',
+  'backgroundColor', 'fillBackground', 'transparency',
+  'textcolor', 'fontsize', 'bold', 'italic',
+  'showLabel', 'horzLabelsAlign', 'vertLabelsAlign',
+  'extendLeft', 'extendRight', 'leftEnd', 'rightEnd',
+]);
+
+/**
+ * Whitelist override keys and coerce each value to a safe primitive.
+ * Prevents injection of arbitrary object graphs / functions into
+ * TradingView's shape-creation API.
+ */
+export function sanitizeOverrides(raw) {
+  if (raw == null) return {};
+  const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+  if (typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new UserInputError('overrides must be a JSON object');
+  }
+  const out = {};
+  for (const [k, v] of Object.entries(parsed)) {
+    if (!ALLOWED_OVERRIDE_KEYS.has(k)) continue;
+    if (v === null) continue;
+    const t = typeof v;
+    if (t === 'string') {
+      if (v.length > 64) continue; // keep payloads tight
+      out[k] = v;
+    } else if (t === 'number') {
+      if (Number.isFinite(v)) out[k] = v;
+    } else if (t === 'boolean') {
+      out[k] = v;
+    }
+    // objects, functions, arrays are dropped
+  }
+  return out;
+}
+
 export async function drawShape({ shape, point, point2, overrides: overridesRaw, text, _deps }) {
   const { evaluate, getChartApi } = _resolve(_deps);
-  const overrides = overridesRaw ? (typeof overridesRaw === 'string' ? JSON.parse(overridesRaw) : overridesRaw) : {};
+  const overrides = sanitizeOverrides(overridesRaw);
   const apiPath = await getChartApi();
-  const overridesStr = JSON.stringify(overrides || {});
+  const overridesStr = JSON.stringify(overrides);
   const textStr = text ? JSON.stringify(text) : '""';
 
   const p1time = requireFinite(point.time, 'point.time');
@@ -44,7 +87,8 @@ export async function drawShape({ shape, point, point2, overrides: overridesRaw,
   return { success: true, shape, entity_id: result?.entity_id };
 }
 
-export async function listDrawings() {
+export async function listDrawings({ _deps } = {}) {
+  const { evaluate, getChartApi } = _resolve(_deps);
   const apiPath = await getChartApi();
   const shapes = await evaluate(`
     (function() {
@@ -56,7 +100,8 @@ export async function listDrawings() {
   return { success: true, count: shapes?.length || 0, shapes: shapes || [] };
 }
 
-export async function getProperties({ entity_id }) {
+export async function getProperties({ entity_id, _deps }) {
+  const { evaluate, getChartApi } = _resolve(_deps);
   const apiPath = await getChartApi();
   const result = await evaluate(`
     (function() {
@@ -85,7 +130,8 @@ export async function getProperties({ entity_id }) {
   return { success: true, ...result };
 }
 
-export async function removeOne({ entity_id }) {
+export async function removeOne({ entity_id, _deps }) {
+  const { evaluate, getChartApi } = _resolve(_deps);
   const apiPath = await getChartApi();
   const result = await evaluate(`
     (function() {
@@ -106,7 +152,8 @@ export async function removeOne({ entity_id }) {
   return { success: true, entity_id: result?.entity_id, removed: result?.removed, remaining_shapes: result?.remaining_shapes };
 }
 
-export async function clearAll() {
+export async function clearAll({ _deps } = {}) {
+  const { evaluate, getChartApi } = _resolve(_deps);
   const apiPath = await getChartApi();
   await evaluate(`${apiPath}.removeAllShapes()`);
   return { success: true, action: 'all_shapes_removed' };

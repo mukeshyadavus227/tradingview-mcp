@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { jsonResult } from './_format.js';
+import { wrapCall } from './_format.js';
 import * as core from '../core/batch.js';
 
 export function registerBatchTools(server) {
@@ -10,7 +10,6 @@ export function registerBatchTools(server) {
     delay_ms: z.coerce.number().optional().describe('Delay between iterations in ms (default 2000)'),
     ohlcv_count: z.coerce.number().optional().describe('Bar count for get_ohlcv action (default 100)'),
   }, async ({ symbols, timeframes, action, delay_ms, ohlcv_count }) => {
-    try { return jsonResult(await core.batchRun({ symbols, timeframes, action, delay_ms, ohlcv_count })); }
-    catch (err) { return jsonResult({ success: false, error: err.message }, true); }
+    return wrapCall(() => core.batchRun({ symbols, timeframes, action, delay_ms, ohlcv_count }));
   });
 }

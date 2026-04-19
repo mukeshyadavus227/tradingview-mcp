@@ -4,6 +4,8 @@
  * They throw on error (callers catch and format).
  */
 import { evaluate, evaluateAsync, getClient } from '../connection.js';
+import { pineFacadeLimiter } from '../ratelimit.js';
+import { AuthError, RateLimitError } from '../errors.js';
 
 // ── Monaco finder (injected into TV page) ──
 const FIND_MONACO = `
@@ -184,6 +186,8 @@ export function analyze({ source }) {
 }
 
 export async function check({ source }) {
+  await pineFacadeLimiter.acquire();
+
   const formData = new URLSearchParams();
   formData.append('source', source);
 
@@ -200,17 +204,31 @@ export async function check({ source }) {
     }
   );
 
+  if (response.status === 401 || response.status === 403) {
+    throw new AuthError(`pine-facade returned ${response.status}`);
+  }
+  if (response.status === 429) {
+    throw new RateLimitError(`pine-facade rate-limited (429)`);
+  }
   if (!response.ok) {
     throw new Error(`TradingView API returned ${response.status}: ${response.statusText}`);
   }
 
   const result = await response.json();
+  const { errors, warnings } = parsePineFacadeResponse(result);
+  return formatCompileResult(errors, warnings);
+}
+
+/**
+ * Shape the pine-facade translate_light JSON response into a normalized
+ * {errors, warnings} array pair. Pure — no network calls.
+ */
+export function parsePineFacadeResponse(result) {
   const errors = [];
   const warnings = [];
   const inner = result?.result;
-
   if (inner) {
-    if (inner.errors2 && inner.errors2.length > 0) {
+    if (Array.isArray(inner.errors2)) {
       for (const e of inner.errors2) {
         errors.push({
           line: e.start?.line, column: e.start?.column,
@@ -219,17 +237,20 @@ export async function check({ source }) {
         });
       }
     }
-    if (inner.warnings2 && inner.warnings2.length > 0) {
+    if (Array.isArray(inner.warnings2)) {
       for (const w of inner.warnings2) {
         warnings.push({ line: w.start?.line, column: w.start?.column, message: w.message });
       }
     }
   }
-
-  if (result.error && typeof result.error === 'string') {
+  if (result?.error && typeof result.error === 'string') {
     errors.push({ message: result.error });
   }
+  return { errors, warnings };
+}
 
+/** Format the user-facing compile response. Pure. */
+export function formatCompileResult(errors, warnings) {
   const compiled = errors.length === 0;
   return {
     success: true,
@@ -240,6 +261,35 @@ export async function check({ source }) {
     warnings: warnings.length > 0 ? warnings : undefined,
     note: compiled ? 'Pine Script compiled successfully.' : undefined,
   };
+}
+
+/** Return the starter template body for a new script of the given type. */
+export function getTemplateForType(type) {
+  const templates = {
+    indicator: '//@version=6\nindicator("My script")\nplot(close)',
+    strategy: '//@version=6\nstrategy("My strategy", overlay=true)\n',
+    library: '//@version=6\n// @description TODO: add library description here\nlibrary("MyLibrary")\n',
+  };
+  return templates[type] || templates.indicator;
+}
+
+/**
+ * Pick a matching script from the pine-facade /list response.
+ * Exact-match (case-insensitive) on scriptName/scriptTitle wins; otherwise
+ * the first substring match. Returns undefined if none match. Pure.
+ */
+export function findScriptMatch(scripts, nameQuery) {
+  if (!Array.isArray(scripts) || !nameQuery) return undefined;
+  const target = String(nameQuery).toLowerCase();
+  const exact = scripts.find(s =>
+    (s.scriptName || '').toLowerCase() === target
+    || (s.scriptTitle || '').toLowerCase() === target
+  );
+  if (exact) return exact;
+  return scripts.find(s =>
+    (s.scriptName || '').toLowerCase().includes(target)
+    || (s.scriptTitle || '').toLowerCase().includes(target)
+  );
 }
 
 // ── Functions requiring TradingView connection ──
@@ -510,13 +560,7 @@ export async function newScript({ type }) {
   if (!editorReady) throw new Error('Could not open Pine Editor.');
 
   const typeMap = { indicator: 'indicator', strategy: 'strategy', library: 'library' };
-  const templates = {
-    indicator: '//@version=6\nindicator("My script")\nplot(close)',
-    strategy: '//@version=6\nstrategy("My strategy", overlay=true)\n',
-    library: '//@version=6\n// @description TODO: add library description here\nlibrary("MyLibrary")\n',
-  };
-
-  const template = templates[type] || templates.indicator;
+  const template = getTemplateForType(type);
 
   // Simply set the source to a new template — this is the most reliable approach
   const escaped = JSON.stringify(template);

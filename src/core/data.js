@@ -3,10 +3,173 @@
  */
 import { evaluate, evaluateAsync, KNOWN_PATHS, safeString } from '../connection.js';
 
-const MAX_OHLCV_BARS = 500;
-const MAX_TRADES = 20;
+export const MAX_OHLCV_BARS = 500;
+export const MAX_TRADES = 20;
+export const DEFAULT_LABEL_LIMIT = 50;
 const CHART_API = KNOWN_PATHS.chartApi;
 const BARS_PATH = KNOWN_PATHS.mainSeriesBars;
+
+// ── Pure helpers (no CDP calls) ─────────────────────────────────────────
+
+/** Clamp requested bar count to [1, MAX_OHLCV_BARS] with default 100. */
+export function clampBarCount(count) {
+  const n = Number(count) || 100;
+  return Math.min(Math.max(1, Math.trunc(n)), MAX_OHLCV_BARS);
+}
+
+/** Clamp requested trade count to [1, MAX_TRADES] with default 20. */
+export function clampTradeCount(count) {
+  const n = Number(count) || 20;
+  return Math.min(Math.max(1, Math.trunc(n)), MAX_TRADES);
+}
+
+/** Round a number to 2 decimal places, preserving null/undefined. */
+function round2(v) {
+  return v == null ? null : Math.round(v * 100) / 100;
+}
+
+/**
+ * Compute OHLCV summary stats (high, low, range, change%, avg_volume, last 5 bars).
+ * Pure function — no CDP needed. Throws on empty input.
+ */
+export function summarizeBars(bars) {
+  if (!Array.isArray(bars) || bars.length === 0) {
+    throw new Error('summarizeBars: bars must be a non-empty array');
+  }
+  const highs = bars.map(b => b.high);
+  const lows = bars.map(b => b.low);
+  const volumes = bars.map(b => b.volume || 0);
+  const first = bars[0];
+  const last = bars[bars.length - 1];
+  const high = Math.max(...highs);
+  const low = Math.min(...lows);
+  return {
+    success: true,
+    bar_count: bars.length,
+    period: { from: first.time, to: last.time },
+    open: first.open,
+    close: last.close,
+    high,
+    low,
+    range: Math.round((high - low) * 100) / 100,
+    change: Math.round((last.close - first.open) * 100) / 100,
+    change_pct: Math.round(((last.close - first.open) / first.open) * 10000) / 100 + '%',
+    avg_volume: Math.round(volumes.reduce((a, b) => a + b, 0) / volumes.length),
+    last_5_bars: bars.slice(-5),
+  };
+}
+
+/**
+ * Filter bulky text-style indicator inputs that blow up context.
+ * Drops `text` input > 200 chars, any string input > 500 chars.
+ */
+export function filterIndicatorInputs(inputs) {
+  if (!Array.isArray(inputs)) return inputs;
+  return inputs.filter(inp => {
+    if (inp.id === 'text' && typeof inp.value === 'string' && inp.value.length > 200) return false;
+    if (typeof inp.value === 'string' && inp.value.length > 500) return false;
+    return true;
+  });
+}
+
+/**
+ * Post-process raw pine-lines graphics data.
+ * Deduplicates horizontal levels by rounded price and sorts high→low.
+ */
+export function processPineLines(raw, verbose) {
+  if (!raw || raw.length === 0) return { success: true, study_count: 0, studies: [] };
+  const studies = raw.map(s => {
+    const hLevels = [];
+    const seen = {};
+    const allLines = [];
+    for (const item of s.items) {
+      const v = item.raw;
+      const y1 = round2(v.y1);
+      const y2 = round2(v.y2);
+      if (verbose) allLines.push({ id: item.id, y1, y2, x1: v.x1, x2: v.x2, horizontal: v.y1 === v.y2, style: v.st, width: v.w, color: v.ci });
+      if (y1 != null && v.y1 === v.y2 && !seen[y1]) { hLevels.push(y1); seen[y1] = true; }
+    }
+    hLevels.sort((a, b) => b - a);
+    const result = { name: s.name, total_lines: s.count, horizontal_levels: hLevels };
+    if (verbose) result.all_lines = allLines;
+    return result;
+  });
+  return { success: true, study_count: studies.length, studies };
+}
+
+/**
+ * Post-process raw pine-labels graphics data.
+ * Caps labels per study to the last `limit` (default 50).
+ */
+export function processPineLabels(raw, maxLabels, verbose) {
+  if (!raw || raw.length === 0) return { success: true, study_count: 0, studies: [] };
+  const limit = maxLabels || DEFAULT_LABEL_LIMIT;
+  const studies = raw.map(s => {
+    let labels = s.items.map(item => {
+      const v = item.raw;
+      const text = v.t || '';
+      const price = round2(v.y);
+      if (verbose) return { id: item.id, text, price, x: v.x, yloc: v.yl, size: v.sz, textColor: v.tci, color: v.ci };
+      return { text, price };
+    }).filter(l => l.text || l.price != null);
+    if (labels.length > limit) labels = labels.slice(-limit);
+    return { name: s.name, total_labels: s.count, showing: labels.length, labels };
+  });
+  return { success: true, study_count: studies.length, studies };
+}
+
+/**
+ * Post-process raw pine-tables graphics data into row strings joined by ' | '.
+ */
+export function processPineTables(raw) {
+  if (!raw || raw.length === 0) return { success: true, study_count: 0, studies: [] };
+  const studies = raw.map(s => {
+    const tables = {};
+    for (const item of s.items) {
+      const v = item.raw;
+      const tid = v.tid || 0;
+      if (!tables[tid]) tables[tid] = {};
+      if (!tables[tid][v.row]) tables[tid][v.row] = {};
+      tables[tid][v.row][v.col] = v.t || '';
+    }
+    const tableList = Object.entries(tables).map(([, rows]) => {
+      const rowNums = Object.keys(rows).map(Number).sort((a, b) => a - b);
+      const formatted = rowNums.map(rn => {
+        const cols = rows[rn];
+        const colNums = Object.keys(cols).map(Number).sort((a, b) => a - b);
+        return colNums.map(cn => cols[cn]).filter(Boolean).join(' | ');
+      }).filter(Boolean);
+      return { rows: formatted };
+    });
+    return { name: s.name, tables: tableList };
+  });
+  return { success: true, study_count: studies.length, studies };
+}
+
+/**
+ * Post-process raw pine-boxes graphics data.
+ * Deduplicates zones by (high, low) rounded key; sorts by high desc.
+ */
+export function processPineBoxes(raw, verbose) {
+  if (!raw || raw.length === 0) return { success: true, study_count: 0, studies: [] };
+  const studies = raw.map(s => {
+    const zones = [];
+    const seen = {};
+    const allBoxes = [];
+    for (const item of s.items) {
+      const v = item.raw;
+      const high = v.y1 != null && v.y2 != null ? Math.round(Math.max(v.y1, v.y2) * 100) / 100 : null;
+      const low = v.y1 != null && v.y2 != null ? Math.round(Math.min(v.y1, v.y2) * 100) / 100 : null;
+      if (verbose) allBoxes.push({ id: item.id, high, low, x1: v.x1, x2: v.x2, borderColor: v.c, bgColor: v.bc });
+      if (high != null && low != null) { const key = high + ':' + low; if (!seen[key]) { zones.push({ high, low }); seen[key] = true; } }
+    }
+    zones.sort((a, b) => b.high - a.high);
+    const result = { name: s.name, total_boxes: s.count, zones };
+    if (verbose) result.all_boxes = allBoxes;
+    return result;
+  });
+  return { success: true, study_count: studies.length, studies };
+}
 
 function buildGraphicsJS(collectionName, mapKey, filter) {
   return `
@@ -60,7 +223,7 @@ function buildGraphicsJS(collectionName, mapKey, filter) {
 }
 
 export async function getOhlcv({ count, summary } = {}) {
-  const limit = Math.min(count || 100, MAX_OHLCV_BARS);
+  const limit = clampBarCount(count);
   let data;
   try {
     data = await evaluate(`
@@ -83,25 +246,7 @@ export async function getOhlcv({ count, summary } = {}) {
     throw new Error('Could not extract OHLCV data. The chart may still be loading.');
   }
 
-  if (summary) {
-    const bars = data.bars;
-    const highs = bars.map(b => b.high);
-    const lows = bars.map(b => b.low);
-    const volumes = bars.map(b => b.volume);
-    const first = bars[0];
-    const last = bars[bars.length - 1];
-    return {
-      success: true, bar_count: bars.length,
-      period: { from: first.time, to: last.time },
-      open: first.open, close: last.close,
-      high: Math.max(...highs), low: Math.min(...lows),
-      range: Math.round((Math.max(...highs) - Math.min(...lows)) * 100) / 100,
-      change: Math.round((last.close - first.open) * 100) / 100,
-      change_pct: Math.round(((last.close - first.open) / first.open) * 10000) / 100 + '%',
-      avg_volume: Math.round(volumes.reduce((a, b) => a + b, 0) / volumes.length),
-      last_5_bars: bars.slice(-5),
-    };
-  }
+  if (summary) return summarizeBars(data.bars);
 
   return { success: true, bar_count: data.bars.length, total_available: data.total_bars, source: data.source, bars: data.bars };
 }
@@ -120,15 +265,7 @@ export async function getIndicator({ entity_id }) {
   `);
 
   if (data?.error) throw new Error(data.error);
-
-  let inputs = data?.inputs;
-  if (Array.isArray(inputs)) {
-    inputs = inputs.filter(inp => {
-      if (inp.id === 'text' && typeof inp.value === 'string' && inp.value.length > 200) return false;
-      if (typeof inp.value === 'string' && inp.value.length > 500) return false;
-      return true;
-    });
-  }
+  const inputs = filterIndicatorInputs(data?.inputs);
   return { success: true, entity_id, visible: data?.visible, inputs };
 }
 
@@ -165,7 +302,7 @@ export async function getStrategyResults() {
 }
 
 export async function getTrades({ max_trades } = {}) {
-  const limit = Math.min(max_trades || 20, MAX_TRADES);
+  const limit = clampTradeCount(max_trades);
   const trades = await evaluate(`
     (function() {
       try {
@@ -358,97 +495,21 @@ export async function getStudyValues() {
 }
 
 export async function getPineLines({ study_filter, verbose } = {}) {
-  const filter = study_filter || '';
-  const raw = await evaluate(buildGraphicsJS('dwglines', 'lines', filter));
-  if (!raw || raw.length === 0) return { success: true, study_count: 0, studies: [] };
-
-  const studies = raw.map(s => {
-    const hLevels = [];
-    const seen = {};
-    const allLines = [];
-    for (const item of s.items) {
-      const v = item.raw;
-      const y1 = v.y1 != null ? Math.round(v.y1 * 100) / 100 : null;
-      const y2 = v.y2 != null ? Math.round(v.y2 * 100) / 100 : null;
-      if (verbose) allLines.push({ id: item.id, y1, y2, x1: v.x1, x2: v.x2, horizontal: v.y1 === v.y2, style: v.st, width: v.w, color: v.ci });
-      if (y1 != null && v.y1 === v.y2 && !seen[y1]) { hLevels.push(y1); seen[y1] = true; }
-    }
-    hLevels.sort((a, b) => b - a);
-    const result = { name: s.name, total_lines: s.count, horizontal_levels: hLevels };
-    if (verbose) result.all_lines = allLines;
-    return result;
-  });
-  return { success: true, study_count: studies.length, studies };
+  const raw = await evaluate(buildGraphicsJS('dwglines', 'lines', study_filter || ''));
+  return processPineLines(raw, verbose);
 }
 
 export async function getPineLabels({ study_filter, max_labels, verbose } = {}) {
-  const filter = study_filter || '';
-  const raw = await evaluate(buildGraphicsJS('dwglabels', 'labels', filter));
-  if (!raw || raw.length === 0) return { success: true, study_count: 0, studies: [] };
-
-  const limit = max_labels || 50;
-  const studies = raw.map(s => {
-    let labels = s.items.map(item => {
-      const v = item.raw;
-      const text = v.t || '';
-      const price = v.y != null ? Math.round(v.y * 100) / 100 : null;
-      if (verbose) return { id: item.id, text, price, x: v.x, yloc: v.yl, size: v.sz, textColor: v.tci, color: v.ci };
-      return { text, price };
-    }).filter(l => l.text || l.price != null);
-    if (labels.length > limit) labels = labels.slice(-limit);
-    return { name: s.name, total_labels: s.count, showing: labels.length, labels };
-  });
-  return { success: true, study_count: studies.length, studies };
+  const raw = await evaluate(buildGraphicsJS('dwglabels', 'labels', study_filter || ''));
+  return processPineLabels(raw, max_labels, verbose);
 }
 
 export async function getPineTables({ study_filter } = {}) {
-  const filter = study_filter || '';
-  const raw = await evaluate(buildGraphicsJS('dwgtablecells', 'tableCells', filter));
-  if (!raw || raw.length === 0) return { success: true, study_count: 0, studies: [] };
-
-  const studies = raw.map(s => {
-    const tables = {};
-    for (const item of s.items) {
-      const v = item.raw;
-      const tid = v.tid || 0;
-      if (!tables[tid]) tables[tid] = {};
-      if (!tables[tid][v.row]) tables[tid][v.row] = {};
-      tables[tid][v.row][v.col] = v.t || '';
-    }
-    const tableList = Object.entries(tables).map(([tid, rows]) => {
-      const rowNums = Object.keys(rows).map(Number).sort((a, b) => a - b);
-      const formatted = rowNums.map(rn => {
-        const cols = rows[rn];
-        const colNums = Object.keys(cols).map(Number).sort((a, b) => a - b);
-        return colNums.map(cn => cols[cn]).filter(Boolean).join(' | ');
-      }).filter(Boolean);
-      return { rows: formatted };
-    });
-    return { name: s.name, tables: tableList };
-  });
-  return { success: true, study_count: studies.length, studies };
+  const raw = await evaluate(buildGraphicsJS('dwgtablecells', 'tableCells', study_filter || ''));
+  return processPineTables(raw);
 }
 
 export async function getPineBoxes({ study_filter, verbose } = {}) {
-  const filter = study_filter || '';
-  const raw = await evaluate(buildGraphicsJS('dwgboxes', 'boxes', filter));
-  if (!raw || raw.length === 0) return { success: true, study_count: 0, studies: [] };
-
-  const studies = raw.map(s => {
-    const zones = [];
-    const seen = {};
-    const allBoxes = [];
-    for (const item of s.items) {
-      const v = item.raw;
-      const high = v.y1 != null && v.y2 != null ? Math.round(Math.max(v.y1, v.y2) * 100) / 100 : null;
-      const low = v.y1 != null && v.y2 != null ? Math.round(Math.min(v.y1, v.y2) * 100) / 100 : null;
-      if (verbose) allBoxes.push({ id: item.id, high, low, x1: v.x1, x2: v.x2, borderColor: v.c, bgColor: v.bc });
-      if (high != null && low != null) { const key = high + ':' + low; if (!seen[key]) { zones.push({ high, low }); seen[key] = true; } }
-    }
-    zones.sort((a, b) => b.high - a.high);
-    const result = { name: s.name, total_boxes: s.count, zones };
-    if (verbose) result.all_boxes = allBoxes;
-    return result;
-  });
-  return { success: true, study_count: studies.length, studies };
+  const raw = await evaluate(buildGraphicsJS('dwgboxes', 'boxes', study_filter || ''));
+  return processPineBoxes(raw, verbose);
 }

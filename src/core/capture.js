@@ -9,12 +9,33 @@ import { fileURLToPath } from 'url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCREENSHOT_DIR = join(dirname(dirname(__dirname)), 'screenshots');
 
+/**
+ * Sanitize a filename for safe disk writes.
+ * Strips path separators, null bytes, and trims to a reasonable length.
+ */
+export function sanitizeFilename(name) {
+  if (!name) return '';
+  return String(name)
+    .replace(/[\/\\]/g, '_')
+    .replace(/\0/g, '')
+    .replace(/\.\./g, '_')
+    .slice(0, 200);
+}
+
+/**
+ * Build the screenshot target filename (without directory) for a region.
+ * Uses ISO timestamp with ':' and '.' replaced for cross-platform compat.
+ */
+export function buildScreenshotName(region, customName, now = new Date()) {
+  const ts = now.toISOString().replace(/[:.]/g, '-');
+  const base = customName || `tv_${region || 'full'}_${ts}`;
+  return sanitizeFilename(base) + '.png';
+}
+
 export async function captureScreenshot({ region, filename, method } = {}) {
   mkdirSync(SCREENSHOT_DIR, { recursive: true });
 
-  const ts = new Date().toISOString().replace(/[:.]/g, '-');
-  const fname = (filename || `tv_${region}_${ts}`).replace(/[\/\\]/g, '_');
-  const filePath = join(SCREENSHOT_DIR, `${fname}.png`);
+  const filePath = join(SCREENSHOT_DIR, buildScreenshotName(region, filename));
 
   if (method === 'api') {
     try {

@@ -159,40 +159,72 @@ export async function uiState() {
   return { success: true, ...state };
 }
 
+/**
+ * Return the platform-specific list of candidate paths where the TradingView
+ * binary may live. Reads `env` (defaults to process.env) for user-scoped paths
+ * so it can be tested deterministically.
+ * @param {string} platform — 'darwin' | 'win32' | 'linux' | others default to linux
+ * @param {object} env — environment object; defaults to process.env
+ */
+export function tvCandidatePaths(platform, env = process.env) {
+  const pathMap = {
+    darwin: [
+      '/Applications/TradingView.app/Contents/MacOS/TradingView',
+      `${env.HOME}/Applications/TradingView.app/Contents/MacOS/TradingView`,
+      // Homebrew Cask installs
+      '/opt/homebrew/Caskroom/tradingview/latest/TradingView.app/Contents/MacOS/TradingView',
+      '/usr/local/Caskroom/tradingview/latest/TradingView.app/Contents/MacOS/TradingView',
+    ],
+    win32: [
+      `${env.LOCALAPPDATA}\\TradingView\\TradingView.exe`,
+      `${env.PROGRAMFILES}\\TradingView\\TradingView.exe`,
+      `${env['PROGRAMFILES(X86)']}\\TradingView\\TradingView.exe`,
+      // Microsoft Store (partial UWP layout)
+      `${env.LOCALAPPDATA}\\Packages\\TradingView.TradingViewDesktop_*\\LocalCache\\Local\\TradingView\\TradingView.exe`,
+      // Scoop
+      `${env.USERPROFILE}\\scoop\\apps\\tradingview\\current\\TradingView.exe`,
+    ],
+    linux: [
+      '/opt/TradingView/tradingview',
+      '/opt/TradingView/TradingView',
+      `${env.HOME}/.local/share/TradingView/TradingView`,
+      '/usr/bin/tradingview',
+      '/snap/tradingview/current/tradingview',
+      // Flatpak
+      `${env.HOME}/.local/share/flatpak/app/com.tradingview.TradingView/current/active/files/bin/tradingview`,
+      '/var/lib/flatpak/app/com.tradingview.TradingView/current/active/files/bin/tradingview',
+      // AppImage common locations
+      `${env.HOME}/Applications/TradingView.AppImage`,
+      `${env.HOME}/Downloads/TradingView.AppImage`,
+    ],
+  };
+  return pathMap[platform] || pathMap.linux;
+}
+
+/** Build the shell command used to look up TradingView on PATH. */
+export function whichTvCommand(platform) {
+  return platform === 'win32' ? 'where TradingView.exe' : 'which tradingview';
+}
+
+/** Build the shell command used to forcibly kill a running TradingView. */
+export function killTvCommand(platform) {
+  return platform === 'win32' ? 'taskkill /F /IM TradingView.exe' : 'pkill -f TradingView';
+}
+
 export async function launch({ port, kill_existing } = {}) {
   const cdpPort = port || 9222;
   const killFirst = kill_existing !== false;
   const platform = process.platform;
 
-  const pathMap = {
-    darwin: [
-      '/Applications/TradingView.app/Contents/MacOS/TradingView',
-      `${process.env.HOME}/Applications/TradingView.app/Contents/MacOS/TradingView`,
-    ],
-    win32: [
-      `${process.env.LOCALAPPDATA}\\TradingView\\TradingView.exe`,
-      `${process.env.PROGRAMFILES}\\TradingView\\TradingView.exe`,
-      `${process.env['PROGRAMFILES(X86)']}\\TradingView\\TradingView.exe`,
-    ],
-    linux: [
-      '/opt/TradingView/tradingview',
-      '/opt/TradingView/TradingView',
-      `${process.env.HOME}/.local/share/TradingView/TradingView`,
-      '/usr/bin/tradingview',
-      '/snap/tradingview/current/tradingview',
-    ],
-  };
-
   let tvPath = null;
-  const candidates = pathMap[platform] || pathMap.linux;
+  const candidates = tvCandidatePaths(platform);
   for (const p of candidates) {
     if (p && existsSync(p)) { tvPath = p; break; }
   }
 
   if (!tvPath) {
     try {
-      const cmd = platform === 'win32' ? 'where TradingView.exe' : 'which tradingview';
-      tvPath = execSync(cmd, { timeout: 3000 }).toString().trim().split('\n')[0];
+      tvPath = execSync(whichTvCommand(platform), { timeout: 3000 }).toString().trim().split('\n')[0];
       if (tvPath && !existsSync(tvPath)) tvPath = null;
     } catch { /* ignore */ }
   }
@@ -213,8 +245,7 @@ export async function launch({ port, kill_existing } = {}) {
 
   if (killFirst) {
     try {
-      if (platform === 'win32') execSync('taskkill /F /IM TradingView.exe', { timeout: 5000 });
-      else execSync('pkill -f TradingView', { timeout: 5000 });
+      execSync(killTvCommand(platform), { timeout: 5000 });
       await new Promise(r => setTimeout(r, 1500));
     } catch { /* may not be running */ }
   }

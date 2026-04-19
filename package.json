@@ -7,23 +7,31 @@
   "bin": {
     "tv": "src/cli/index.js"
   },
+  "engines": {
+    "node": ">=20"
+  },
   "exports": {
     ".": "./src/server.js",
-    "./core": "./src/core/index.js"
+    "./core": "./src/core/index.js",
+    "./errors": "./src/errors.js"
   },
   "scripts": {
     "start": "node src/server.js",
     "tv": "node src/cli/index.js",
-    "test": "node --test tests/e2e.test.js tests/pine_analyze.test.js",
+    "test": "node --test tests/batch_helpers.test.js tests/capture_helpers.test.js tests/cli.test.js tests/cli_commands.test.js tests/cli_handlers.test.js tests/defensive_branches.test.js tests/connection_retry.test.js tests/data_helpers.test.js tests/drawing_helpers.test.js tests/errors.test.js tests/fixture_harness.test.js tests/health_helpers.test.js tests/pine_analyze.test.js tests/pine_helpers.test.js tests/progress.test.js tests/ratelimit.test.js tests/replay.test.js tests/sanitization.test.js tests/shutdown.test.js tests/tools.test.js tests/ui_helpers.test.js tests/smoke/alerts.smoke.test.js tests/smoke/batch.smoke.test.js tests/smoke/capture.smoke.test.js tests/smoke/chart.smoke.test.js tests/smoke/connection.smoke.test.js tests/smoke/data.smoke.test.js tests/smoke/drawing.smoke.test.js tests/smoke/health.smoke.test.js tests/smoke/indicators.smoke.test.js tests/smoke/pane.smoke.test.js tests/smoke/pine.smoke.test.js tests/smoke/tab.smoke.test.js tests/smoke/ui.smoke.test.js tests/smoke/wait.smoke.test.js tests/smoke/watchlist.smoke.test.js",
+    "test:smoke": "node --test tests/smoke/alerts.smoke.test.js tests/smoke/batch.smoke.test.js tests/smoke/capture.smoke.test.js tests/smoke/chart.smoke.test.js tests/smoke/connection.smoke.test.js tests/smoke/data.smoke.test.js tests/smoke/drawing.smoke.test.js tests/smoke/health.smoke.test.js tests/smoke/indicators.smoke.test.js tests/smoke/pane.smoke.test.js tests/smoke/pine.smoke.test.js tests/smoke/tab.smoke.test.js tests/smoke/ui.smoke.test.js tests/smoke/wait.smoke.test.js tests/smoke/watchlist.smoke.test.js",
     "test:e2e": "node --test tests/e2e.test.js",
-    "test:unit": "node --test tests/pine_analyze.test.js tests/cli.test.js",
-    "test:cli": "node --test tests/cli.test.js",
-    "test:all": "node --test tests/e2e.test.js tests/pine_analyze.test.js tests/cli.test.js",
-    "test:verbose": "node --test --test-reporter=spec tests/e2e.test.js tests/pine_analyze.test.js",
-    "test:count": "node --test --test-reporter=spec tests/e2e.test.js 2>&1 | tail -5"
+    "test:e2e:record": "TV_FIXTURE_MODE=record node --test tests/e2e.test.js",
+    "test:unit": "npm test",
+    "test:cli": "node --test tests/cli.test.js tests/cli_commands.test.js tests/cli_handlers.test.js tests/defensive_branches.test.js",
+    "test:all": "node --test tests/e2e.test.js tests/batch_helpers.test.js tests/capture_helpers.test.js tests/cli.test.js tests/cli_commands.test.js tests/cli_handlers.test.js tests/defensive_branches.test.js tests/connection_retry.test.js tests/data_helpers.test.js tests/drawing_helpers.test.js tests/errors.test.js tests/fixture_harness.test.js tests/health_helpers.test.js tests/pine_analyze.test.js tests/pine_helpers.test.js tests/progress.test.js tests/ratelimit.test.js tests/replay.test.js tests/sanitization.test.js tests/shutdown.test.js tests/tools.test.js tests/ui_helpers.test.js tests/smoke/alerts.smoke.test.js tests/smoke/batch.smoke.test.js tests/smoke/capture.smoke.test.js tests/smoke/chart.smoke.test.js tests/smoke/connection.smoke.test.js tests/smoke/data.smoke.test.js tests/smoke/drawing.smoke.test.js tests/smoke/health.smoke.test.js tests/smoke/indicators.smoke.test.js tests/smoke/pane.smoke.test.js tests/smoke/pine.smoke.test.js tests/smoke/tab.smoke.test.js tests/smoke/ui.smoke.test.js tests/smoke/wait.smoke.test.js tests/smoke/watchlist.smoke.test.js",
+    "test:verbose": "node --test --test-reporter=spec tests/batch_helpers.test.js tests/capture_helpers.test.js tests/cli.test.js tests/cli_commands.test.js tests/cli_handlers.test.js tests/defensive_branches.test.js tests/connection_retry.test.js tests/data_helpers.test.js tests/drawing_helpers.test.js tests/errors.test.js tests/fixture_harness.test.js tests/health_helpers.test.js tests/pine_analyze.test.js tests/pine_helpers.test.js tests/progress.test.js tests/ratelimit.test.js tests/replay.test.js tests/sanitization.test.js tests/shutdown.test.js tests/tools.test.js tests/ui_helpers.test.js tests/smoke/alerts.smoke.test.js tests/smoke/batch.smoke.test.js tests/smoke/capture.smoke.test.js tests/smoke/chart.smoke.test.js tests/smoke/connection.smoke.test.js tests/smoke/data.smoke.test.js tests/smoke/drawing.smoke.test.js tests/smoke/health.smoke.test.js tests/smoke/indicators.smoke.test.js tests/smoke/pane.smoke.test.js tests/smoke/pine.smoke.test.js tests/smoke/tab.smoke.test.js tests/smoke/ui.smoke.test.js tests/smoke/wait.smoke.test.js tests/smoke/watchlist.smoke.test.js",
+    "test:count": "node --test --test-reporter=spec tests/e2e.test.js 2>&1 | tail -5",
+    "test:coverage": "node --test --experimental-test-coverage --test-coverage-exclude='tests/**' --test-coverage-exclude='node_modules/**' tests/batch_helpers.test.js tests/capture_helpers.test.js tests/cli.test.js tests/cli_commands.test.js tests/cli_handlers.test.js tests/defensive_branches.test.js tests/connection_retry.test.js tests/data_helpers.test.js tests/drawing_helpers.test.js tests/errors.test.js tests/fixture_harness.test.js tests/health_helpers.test.js tests/pine_analyze.test.js tests/pine_helpers.test.js tests/progress.test.js tests/ratelimit.test.js tests/replay.test.js tests/sanitization.test.js tests/shutdown.test.js tests/tools.test.js tests/ui_helpers.test.js tests/smoke/alerts.smoke.test.js tests/smoke/batch.smoke.test.js tests/smoke/capture.smoke.test.js tests/smoke/chart.smoke.test.js tests/smoke/connection.smoke.test.js tests/smoke/data.smoke.test.js tests/smoke/drawing.smoke.test.js tests/smoke/health.smoke.test.js tests/smoke/indicators.smoke.test.js tests/smoke/pane.smoke.test.js tests/smoke/pine.smoke.test.js tests/smoke/tab.smoke.test.js tests/smoke/ui.smoke.test.js tests/smoke/wait.smoke.test.js tests/smoke/watchlist.smoke.test.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",
-    "chrome-remote-interface": "^0.33.2"
+    "chrome-remote-interface": "^0.33.2",
+    "zod": "^3.23.8"
   }
 }

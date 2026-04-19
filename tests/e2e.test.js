@@ -21,16 +21,47 @@
 
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 import CDP from 'chrome-remote-interface';
+import { createFixtureHarness, RECORD } from './fixtures/harness.js';
 
 let client;
 let Runtime;
 let Input;
 let Page;
+let harness = null;
+
+const FIXTURE_PATH = new URL('./fixtures/e2e.json', import.meta.url).pathname;
+
+// Probe CDP availability once at module load. Top-level await works in ESM
+// and lets the describe() block decide whether to skip the whole suite.
+async function probeCdp() {
+  try {
+    const resp = await fetch('http://localhost:9222/json/list', {
+      signal: AbortSignal.timeout(1500),
+    });
+    const targets = await resp.json();
+    return targets.some(t => t.url && t.url.includes('tradingview.com/chart'));
+  } catch { return false; }
+}
+
+const CDP_AVAILABLE = await probeCdp();
+const FIXTURE_EXISTS = existsSync(FIXTURE_PATH);
+
+// Pick a mode:
+//   live    — CDP up, default (no record) → direct evaluate, no fixtures
+//   record  — CDP up, TV_FIXTURE_MODE=record → direct evaluate + persist
+//   replay  — CDP down but fixture exists → read from fixture
+//   skip    — neither CDP nor fixture → whole suite gets skipped
+const MODE = CDP_AVAILABLE
+  ? (RECORD ? 'record' : 'live')
+  : (FIXTURE_EXISTS ? 'replay' : 'skip');
+
+process.stderr.write(`[e2e] mode=${MODE} (cdp=${CDP_AVAILABLE} fixture=${FIXTURE_EXISTS})\n`);
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
-async function evaluate(expr) {
+async function liveEvaluate(expr) {
   const { result } = await Runtime.evaluate({
     expression: expr,
     returnByValue: true,
@@ -38,6 +69,10 @@ async function evaluate(expr) {
   });
   if (result.subtype === 'error') throw new Error(result.description);
   return result.value;
+}
+
+async function evaluate(expr) {
+  return harness ? harness.evaluate(expr) : liveEvaluate(expr);
 }
 
 async function apiExists(path) {
@@ -61,28 +96,37 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 // ═══════════════════════════════════════════════════════════════════════════
 
-describe('TradingView MCP — Full E2E (70 tools)', () => {
+describe('TradingView MCP — Full E2E (70 tools)',
+  MODE === 'skip'
+    ? { skip: 'No TradingView CDP at localhost:9222 and no fixtures recorded. Launch TradingView with --remote-debugging-port=9222, or run with TV_FIXTURE_MODE=record once to create tests/fixtures/e2e.json.' }
+    : {},
+  () => {
 
   before(async () => {
-    try {
-      const targets = await CDP.List({ host: 'localhost', port: 9222 });
-      const chartTarget = targets.find(t => t.url && t.url.includes('tradingview.com/chart'));
-      if (!chartTarget) throw new Error('No TradingView chart target found');
+    if (MODE === 'replay') {
+      harness = createFixtureHarness(FIXTURE_PATH);
+      return;
+    }
+    // live or record — need a real CDP client
+    const targets = await CDP.List({ host: 'localhost', port: 9222 });
+    const chartTarget = targets.find(t => t.url && t.url.includes('tradingview.com/chart'));
+    if (!chartTarget) throw new Error('No TradingView chart target found');
 
-      client = await CDP({ host: 'localhost', port: 9222, target: chartTarget.id });
-      await client.Runtime.enable();
-      await client.Page.enable();
-      await client.DOM.enable();
-      Runtime = client.Runtime;
-      Input = client.Input;
-      Page = client.Page;
-    } catch (err) {
-      console.error('Cannot connect to TradingView. Make sure it is running with --remote-debugging-port=9222');
-      process.exit(1);
+    client = await CDP({ host: 'localhost', port: 9222, target: chartTarget.id });
+    await client.Runtime.enable();
+    await client.Page.enable();
+    await client.DOM.enable();
+    Runtime = client.Runtime;
+    Input = client.Input;
+    Page = client.Page;
+
+    if (MODE === 'record') {
+      harness = createFixtureHarness(FIXTURE_PATH, liveEvaluate);
     }
   });
 
   after(async () => {
+    if (MODE === 'record' && harness) harness.save();
     if (client) try { await client.close(); } catch {}
   });
 

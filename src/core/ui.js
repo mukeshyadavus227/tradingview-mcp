@@ -3,6 +3,64 @@
  */
 import { evaluate, evaluateAsync, getClient } from '../connection.js';
 
+// ── Pure helpers (no CDP) ──────────────────────────────────────────────
+
+/**
+ * Compute the CDP modifier bitmask from a list of modifier names.
+ * alt=1, ctrl=2, meta=4, shift=8 — matches Chrome DevTools Protocol spec.
+ */
+export function modifierMask(modifiers) {
+  if (!modifiers) return 0;
+  const bits = { alt: 1, ctrl: 2, meta: 4, shift: 8 };
+  let mask = 0;
+  for (const m of modifiers) {
+    const b = bits[String(m).toLowerCase()];
+    if (b) mask |= b;
+  }
+  return mask;
+}
+
+export const KEY_MAP = {
+  'Enter': { code: 'Enter', vk: 13 }, 'Escape': { code: 'Escape', vk: 27 }, 'Tab': { code: 'Tab', vk: 9 },
+  'Backspace': { code: 'Backspace', vk: 8 }, 'Delete': { code: 'Delete', vk: 46 },
+  'ArrowUp': { code: 'ArrowUp', vk: 38 }, 'ArrowDown': { code: 'ArrowDown', vk: 40 },
+  'ArrowLeft': { code: 'ArrowLeft', vk: 37 }, 'ArrowRight': { code: 'ArrowRight', vk: 39 },
+  'Space': { code: 'Space', vk: 32 }, 'Home': { code: 'Home', vk: 36 }, 'End': { code: 'End', vk: 35 },
+  'PageUp': { code: 'PageUp', vk: 33 }, 'PageDown': { code: 'PageDown', vk: 34 },
+  'F1': { code: 'F1', vk: 112 }, 'F2': { code: 'F2', vk: 113 }, 'F5': { code: 'F5', vk: 116 },
+};
+
+/** Resolve a named key to its CDP {code, vk}. Unknown keys fall back to uppercase letter. */
+export function resolveKey(key) {
+  if (KEY_MAP[key]) return KEY_MAP[key];
+  const up = String(key || '').toUpperCase();
+  return { code: 'Key' + up, vk: up.charCodeAt(0) || 0 };
+}
+
+/** Given a saved-charts array and a query, find the best match. */
+export function findLayoutMatch(charts, query) {
+  if (!Array.isArray(charts) || !query) return null;
+  const q = String(query).toLowerCase();
+  const exact = charts.find(c => {
+    const n = (c.name || c.title || '').toLowerCase();
+    return n === q;
+  });
+  if (exact) return exact;
+  return charts.find(c => (c.name || c.title || '').toLowerCase().includes(q)) || null;
+}
+
+/** Directional scroll → CDP deltaX/deltaY pair. */
+export function scrollDelta(direction, amount) {
+  const px = Number(amount) || 300;
+  switch (direction) {
+    case 'up':    return { deltaX: 0, deltaY: -px };
+    case 'down':  return { deltaX: 0, deltaY: px };
+    case 'left':  return { deltaX: -px, deltaY: 0 };
+    case 'right': return { deltaX: px, deltaY: 0 };
+    default:      return { deltaX: 0, deltaY: 0 };
+  }
+}
+
 export async function click({ by, value }) {
   const escaped = JSON.stringify(value);
   const result = await evaluate(`
@@ -162,23 +220,8 @@ export async function layoutSwitch({ name }) {
 
 export async function keyboard({ key, modifiers }) {
   const c = await getClient();
-  let mod = 0;
-  if (modifiers) {
-    if (modifiers.includes('alt')) mod |= 1;
-    if (modifiers.includes('ctrl')) mod |= 2;
-    if (modifiers.includes('meta')) mod |= 4;
-    if (modifiers.includes('shift')) mod |= 8;
-  }
-  const keyMap = {
-    'Enter': { code: 'Enter', vk: 13 }, 'Escape': { code: 'Escape', vk: 27 }, 'Tab': { code: 'Tab', vk: 9 },
-    'Backspace': { code: 'Backspace', vk: 8 }, 'Delete': { code: 'Delete', vk: 46 },
-    'ArrowUp': { code: 'ArrowUp', vk: 38 }, 'ArrowDown': { code: 'ArrowDown', vk: 40 },
-    'ArrowLeft': { code: 'ArrowLeft', vk: 37 }, 'ArrowRight': { code: 'ArrowRight', vk: 39 },
-    'Space': { code: 'Space', vk: 32 }, 'Home': { code: 'Home', vk: 36 }, 'End': { code: 'End', vk: 35 },
-    'PageUp': { code: 'PageUp', vk: 33 }, 'PageDown': { code: 'PageDown', vk: 34 },
-    'F1': { code: 'F1', vk: 112 }, 'F2': { code: 'F2', vk: 113 }, 'F5': { code: 'F5', vk: 116 },
-  };
-  const mapped = keyMap[key] || { code: 'Key' + key.toUpperCase(), vk: key.toUpperCase().charCodeAt(0) };
+  const mod = modifierMask(modifiers);
+  const mapped = resolveKey(key);
   await c.Input.dispatchKeyEvent({ type: 'keyDown', modifiers: mod, key, code: mapped.code, windowsVirtualKeyCode: mapped.vk });
   await c.Input.dispatchKeyEvent({ type: 'keyUp', key, code: mapped.code });
   return { success: true, key, modifiers: modifiers || [] };
@@ -227,9 +270,7 @@ export async function scroll({ direction, amount }) {
       return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
     })()
   `);
-  let deltaX = 0, deltaY = 0;
-  if (direction === 'up') deltaY = -px; else if (direction === 'down') deltaY = px;
-  else if (direction === 'left') deltaX = -px; else if (direction === 'right') deltaX = px;
+  const { deltaX, deltaY } = scrollDelta(direction, px);
   await c.Input.dispatchMouseEvent({ type: 'mouseWheel', x: center.x, y: center.y, deltaX, deltaY });
   return { success: true, direction, amount: px };
 }

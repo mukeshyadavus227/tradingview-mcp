@@ -240,8 +240,24 @@ strategy.entry("Long", strategy.long)`);
   });
 });
 
-describe('pine_check — server compile', () => {
-  it('should compile valid Pine Script via TradingView API', async () => {
+describe('pine_check — server compile', async () => {
+  // These tests call the live pine-facade.tradingview.com API.
+  // Skip them when the network is unavailable or the service is
+  // blocked (e.g. in a sandboxed CI environment).
+  const PINE_FACADE = 'https://pine-facade.tradingview.com/pine-facade/translate_light?user_name=Guest&pine_id=00000000-0000-0000-0000-000000000000';
+  let networkAvailable = false;
+  try {
+    const probe = await fetch(PINE_FACADE, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'source=',
+      signal: AbortSignal.timeout(3000),
+    });
+    networkAvailable = probe.status !== 403;
+  } catch { networkAvailable = false; }
+  const maybe = networkAvailable ? it : it.skip;
+
+  maybe('should compile valid Pine Script via TradingView API', async () => {
     const source = `//@version=6
 indicator("API Test", overlay=true)
 plot(close, "Close", color=color.blue)`;
@@ -267,7 +283,7 @@ plot(close, "Close", color=color.blue)`;
     assert.ok(result.result || result.error === undefined, 'Should compile successfully');
   });
 
-  it('should return errors for invalid Pine Script', async () => {
+  maybe('should return errors for invalid Pine Script', async () => {
     const source = `//@version=6
 indicator("Bad")
 this_function_does_not_exist()`;
@@ -300,7 +316,7 @@ this_function_does_not_exist()`;
     assert.ok(mentionsBadFn, 'Error should mention the bad function via message or ctx.fullName');
   });
 
-  it('should handle empty source gracefully', async () => {
+  maybe('should handle empty source gracefully', async () => {
     const formData = new URLSearchParams();
     formData.append('source', '');
 

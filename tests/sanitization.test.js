@@ -326,3 +326,156 @@ describe('path traversal prevention', () => {
     assert.ok(source.includes(".replace(/[\\/\\\\]/g, '_')"));
   });
 });
+
+// ── Per-module sanitization audit ────────────────────────────────────────
+// For each core module that accepts user input and passes it into a CDP
+// `evaluate()` call, confirm the input flows through safeString/requireFinite
+// (or JSON.stringify / Number coercion) rather than being concatenated raw.
+// These are static source checks — they catch regressions even when the
+// behavioral test suite can't exercise the live CDP path.
+
+function readCore(name) {
+  return readFileSync(new URL(`../src/core/${name}`, import.meta.url), 'utf8');
+}
+
+describe('data.js — user-input sanitization', () => {
+  const src = readCore('data.js');
+
+  it('getQuote escapes the symbol parameter via safeString', () => {
+    // getQuote({ symbol }) → must pass through safeString
+    assert.match(src, /safeString\(symbol \|\| ''\)/);
+  });
+
+  it('getIndicator escapes entity_id via safeString', () => {
+    assert.match(src, /safeString\(entity_id\)/);
+  });
+
+  it('buildGraphicsJS escapes the filter string via safeString', () => {
+    assert.match(src, /safeString\(filter \|\| ''\)/);
+  });
+
+  it('does not interpolate entity_id, symbol, or filter directly into evaluate()', () => {
+    // No bare `${entity_id}` / `${symbol}` / `${filter}` inside template
+    // literals (those would be unescaped user input).
+    assert.ok(!/\$\{entity_id\}/.test(src), 'entity_id interpolated raw');
+    assert.ok(!/\$\{symbol\}/.test(src), 'symbol interpolated raw');
+    assert.ok(!/\$\{filter\}/.test(src), 'filter interpolated raw');
+  });
+});
+
+describe('pine.js — user-input sanitization', () => {
+  const src = readCore('pine.js');
+
+  it('setSource escapes the source via JSON.stringify', () => {
+    // JSON.stringify is equivalent to safeString for our purposes
+    assert.match(src, /JSON\.stringify\(source\)/);
+  });
+
+  it('newScript escapes the template via JSON.stringify before interpolation', () => {
+    assert.match(src, /JSON\.stringify\(template\)/);
+  });
+
+  it('openScript escapes the script name via JSON.stringify', () => {
+    assert.match(src, /JSON\.stringify\(name\.toLowerCase\(\)\)/);
+  });
+
+  it('does not interpolate source, name, or type directly', () => {
+    assert.ok(!/\$\{source\}/.test(src), 'source interpolated raw');
+    assert.ok(!/\$\{name\}/.test(src), 'name interpolated raw');
+    // `type` appears as a property name in templates; guard against raw user-value interpolation
+    assert.ok(!/\$\{\s*type\s*\}/.test(src), 'type interpolated raw');
+  });
+});
+
+describe('alerts.js — user-input sanitization', () => {
+  const src = readCore('alerts.js');
+
+  it('escapes price input via safeString', () => {
+    assert.match(src, /safeString\(String\(price\)\)/);
+  });
+
+  it('escapes message input via JSON.stringify', () => {
+    assert.match(src, /JSON\.stringify\(message\)/);
+  });
+
+  it('does not interpolate price or message directly', () => {
+    assert.ok(!/\$\{price\}/.test(src), 'price interpolated raw');
+    assert.ok(!/\$\{message\}/.test(src), 'message interpolated raw');
+  });
+});
+
+describe('batch.js — user-input sanitization', () => {
+  const src = readCore('batch.js');
+
+  it('escapes symbol and timeframe via safeString', () => {
+    assert.match(src, /safeString\(symbol\)/);
+    assert.match(src, /safeString\(tf\)/);
+  });
+
+  it('does not interpolate symbol/tf directly', () => {
+    assert.ok(!/setSymbol\(\$\{symbol\}/.test(src));
+    assert.ok(!/setResolution\(\$\{tf\}/.test(src));
+  });
+});
+
+describe('capture.js — filename safety', () => {
+  const src = readCore('capture.js');
+
+  it('never interpolates untrusted filename into evaluate()', () => {
+    // capture.js writes to disk only — it should not pass `filename`
+    // into any CDP evaluate expression.
+    assert.ok(!/evaluate\([^)]*\$\{filename/.test(src));
+  });
+});
+
+describe('core module audit — evaluate() usage hygiene', () => {
+  // Every core module that takes user input AND calls evaluate() should
+  // either import safeString/requireFinite or use JSON.stringify.
+  // We flag any file that uses evaluate() with an unsafe pattern.
+  const CORE_DIR = new URL('../src/core/', import.meta.url).pathname;
+  const coreFiles = readdirSync(CORE_DIR).filter(f => f.endsWith('.js') && f !== 'index.js');
+
+  // Known user-input parameter names — these should never appear as a bare
+  // `${name}` interpolation inside an evaluate() template literal; they must
+  // flow through safeString / JSON.stringify / requireFinite first.
+  const USER_INPUT_PARAMS = [
+    'symbol', 'symbols', 'entity_id', 'name', 'filter', 'study_filter',
+    'source', 'query', 'panel', 'shape', 'message', 'condition',
+    'date', 'selector', 'text',
+  ];
+
+  for (const file of coreFiles) {
+    it(`${file} never embeds raw user-input params into evaluate()`, () => {
+      const src = readFileSync(join(CORE_DIR, file), 'utf8');
+
+      // Collect names that are locally sanitized within this file — safe to
+      // interpolate even if they collide with a user-input name.
+      // Treat a name as sanitized if its assignment expression (up to the
+      // end-of-statement) contains a known sanitizer call. Covers ternaries
+      // like `const x = a ? JSON.stringify(a) : 'null'`.
+      const sanitized = new Set();
+      const declRe = /(?:const|let|var)\s+(\w+)\s*=\s*([^;]+);/g;
+      let decl;
+      while ((decl = declRe.exec(src)) !== null) {
+        const [, name, rhs] = decl;
+        if (/\b(?:JSON\.stringify|safeString|requireFinite|Number|parseInt|parseFloat)\(/.test(rhs)) {
+          sanitized.add(name);
+        }
+      }
+
+      const re = /evaluate(?:Async)?\(`([^`]+)`/gs;
+      const issues = [];
+      let m;
+      while ((m = re.exec(src)) !== null) {
+        const body = m[1];
+        for (const param of USER_INPUT_PARAMS) {
+          if (sanitized.has(param)) continue;
+          const pattern = new RegExp(`\\$\\{\\s*${param}\\s*\\}`);
+          if (pattern.test(body)) issues.push(param);
+        }
+      }
+      assert.deepEqual([...new Set(issues)], [],
+        `${file} interpolates user-input params raw: ${issues.join(', ')} — wrap in safeString()`);
+    });
+  }
+});

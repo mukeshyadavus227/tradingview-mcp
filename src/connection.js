@@ -1,11 +1,61 @@
 import CDP from 'chrome-remote-interface';
+import { ConnectionError, ConnectionLostError, classifyError } from './errors.js';
+import { onShutdown } from './shutdown.js';
+
+onShutdown('cdp-client', async () => {
+  if (client) {
+    try { await client.close(); } catch { /* ignore */ }
+    client = null;
+    targetInfo = null;
+  }
+});
 
 let client = null;
 let targetInfo = null;
 const CDP_HOST = 'localhost';
 const CDP_PORT = 9222;
-const MAX_RETRIES = 5;
-const BASE_DELAY = 500;
+export const MAX_RETRIES = 5;
+export const BASE_DELAY = 500;
+const BACKOFF_CAP = 30000;
+
+// ── Test-mode overrides ─────────────────────────────────────────────────
+// Unit tests install mocks here so core/* modules (which import evaluate,
+// getClient, getChartApi etc. at module load time) don't need a live CDP.
+// Production code never touches this — overrides default to null.
+let _testOverrides = null;
+
+/** Install test mocks. Pass null to reset. */
+export function __setTestOverrides(mocks) {
+  _testOverrides = mocks;
+}
+export function __getTestOverrides() { return _testOverrides; }
+
+/**
+ * Compute the backoff delay (ms) for an attempt using exponential strategy
+ * capped at BACKOFF_CAP. Attempt 0 → BASE_DELAY, attempt N → BASE_DELAY*2^N.
+ */
+export function computeBackoff(attempt, base = BASE_DELAY, cap = BACKOFF_CAP) {
+  return Math.min(base * Math.pow(2, attempt), cap);
+}
+
+/**
+ * Retry an async operation with exponential backoff, up to `maxRetries` times.
+ * `sleep` and `maxRetries` are injectable so this can be unit tested without
+ * real timers.
+ * Rejects with the last error, prefixed with `label`.
+ */
+export async function retryWithBackoff(op, { label = 'operation', maxRetries = MAX_RETRIES, sleep = (ms) => new Promise(r => setTimeout(r, ms)), base = BASE_DELAY, cap = BACKOFF_CAP } = {}) {
+  let lastError;
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      return await op(attempt);
+    } catch (err) {
+      lastError = err;
+      await sleep(computeBackoff(attempt, base, cap));
+    }
+  }
+  throw new Error(`${label} failed after ${maxRetries} attempts: ${lastError?.message}`);
+}
 
 // Known direct API paths discovered via live probing (see PROBE_RESULTS.md)
 const KNOWN_PATHS = {
@@ -48,6 +98,7 @@ export function requireFinite(value, name) {
 }
 
 export async function getClient() {
+  if (_testOverrides?.getClient) return _testOverrides.getClient();
   if (client) {
     try {
       // Quick liveness check
@@ -62,29 +113,18 @@ export async function getClient() {
 }
 
 export async function connect() {
-  let lastError;
-  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-    try {
-      const target = await findChartTarget();
-      if (!target) {
-        throw new Error('No TradingView chart target found. Is TradingView open with a chart?');
-      }
-      targetInfo = target;
-      client = await CDP({ host: CDP_HOST, port: CDP_PORT, target: target.id });
-
-      // Enable required domains
-      await client.Runtime.enable();
-      await client.Page.enable();
-      await client.DOM.enable();
-
-      return client;
-    } catch (err) {
-      lastError = err;
-      const delay = Math.min(BASE_DELAY * Math.pow(2, attempt), 30000);
-      await new Promise(r => setTimeout(r, delay));
+  return retryWithBackoff(async () => {
+    const target = await findChartTarget();
+    if (!target) {
+      throw new Error('No TradingView chart target found. Is TradingView open with a chart?');
     }
-  }
-  throw new Error(`CDP connection failed after ${MAX_RETRIES} attempts: ${lastError?.message}`);
+    targetInfo = target;
+    client = await CDP({ host: CDP_HOST, port: CDP_PORT, target: target.id });
+    await client.Runtime.enable();
+    await client.Page.enable();
+    await client.DOM.enable();
+    return client;
+  }, { label: 'CDP connection' });
 }
 
 async function findChartTarget() {
@@ -97,30 +137,53 @@ async function findChartTarget() {
 }
 
 export async function getTargetInfo() {
+  if (_testOverrides?.getTargetInfo) return _testOverrides.getTargetInfo();
   if (!targetInfo) {
     await getClient();
   }
   return targetInfo;
 }
 
+/** Detect a disconnection-type error from chrome-remote-interface. */
+function isDisconnectError(err) {
+  const msg = err?.message || '';
+  return /WebSocket is not open|socket hang up|ECONNRESET|connection closed|ws closed|ECONNREFUSED/i.test(msg);
+}
+
 export async function evaluate(expression, opts = {}) {
-  const c = await getClient();
-  const result = await c.Runtime.evaluate({
-    expression,
-    returnByValue: true,
-    awaitPromise: opts.awaitPromise ?? false,
-    ...opts,
-  });
-  if (result.exceptionDetails) {
-    const msg = result.exceptionDetails.exception?.description
-      || result.exceptionDetails.text
-      || 'Unknown evaluation error';
-    throw new Error(`JS evaluation error: ${msg}`);
+  if (_testOverrides?.evaluate) return _testOverrides.evaluate(expression, opts);
+  // First attempt. If the socket died underneath us, drop the client cache
+  // and retry exactly once before bubbling the error up. This makes the
+  // CLI and MCP tools self-healing across a TradingView restart.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const c = await getClient();
+      const result = await c.Runtime.evaluate({
+        expression,
+        returnByValue: true,
+        awaitPromise: opts.awaitPromise ?? false,
+        ...opts,
+      });
+      if (result.exceptionDetails) {
+        const msg = result.exceptionDetails.exception?.description
+          || result.exceptionDetails.text
+          || 'Unknown evaluation error';
+        throw new Error(`JS evaluation error: ${msg}`);
+      }
+      return result.result?.value;
+    } catch (err) {
+      if (attempt === 0 && isDisconnectError(err)) {
+        client = null;
+        targetInfo = null;
+        continue;
+      }
+      throw attempt === 0 ? err : new ConnectionLostError(err.message, { cause: err });
+    }
   }
-  return result.result?.value;
 }
 
 export async function evaluateAsync(expression) {
+  if (_testOverrides?.evaluateAsync) return _testOverrides.evaluateAsync(expression);
   return evaluate(expression, { awaitPromise: true });
 }
 
@@ -145,21 +208,26 @@ async function verifyAndReturn(path, name) {
 }
 
 export async function getChartApi() {
+  if (_testOverrides?.getChartApi) return _testOverrides.getChartApi();
   return verifyAndReturn(KNOWN_PATHS.chartApi, 'Chart API');
 }
 
 export async function getChartCollection() {
+  if (_testOverrides?.getChartCollection) return _testOverrides.getChartCollection();
   return verifyAndReturn(KNOWN_PATHS.chartWidgetCollection, 'Chart Widget Collection');
 }
 
 export async function getBottomBar() {
+  if (_testOverrides?.getBottomBar) return _testOverrides.getBottomBar();
   return verifyAndReturn(KNOWN_PATHS.bottomWidgetBar, 'Bottom Widget Bar');
 }
 
 export async function getReplayApi() {
+  if (_testOverrides?.getReplayApi) return _testOverrides.getReplayApi();
   return verifyAndReturn(KNOWN_PATHS.replayApi, 'Replay API');
 }
 
 export async function getMainSeriesBars() {
+  if (_testOverrides?.getMainSeriesBars) return _testOverrides.getMainSeriesBars();
   return verifyAndReturn(KNOWN_PATHS.mainSeriesBars, 'Main Series Bars');
 }

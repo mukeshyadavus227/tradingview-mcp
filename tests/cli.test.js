@@ -129,8 +129,23 @@ describe('CLI — pine analyze (offline)', () => {
   });
 });
 
-describe('CLI — pine check (server compile)', () => {
-  it('compiles valid Pine Script', () => {
+describe('CLI — pine check (server compile)', async () => {
+  // Requires network access to pine-facade.tradingview.com.
+  // Skipped automatically when the API isn't reachable (sandboxed CI).
+  let networkAvailable = false;
+  try {
+    const probe = await fetch(
+      'https://pine-facade.tradingview.com/pine-facade/translate_light?user_name=Guest&pine_id=00000000-0000-0000-0000-000000000000',
+      { method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'source=',
+        signal: AbortSignal.timeout(3000) },
+    );
+    networkAvailable = probe.status !== 403;
+  } catch { networkAvailable = false; }
+  const maybe = networkAvailable ? it : it.skip;
+
+  maybe('compiles valid Pine Script', () => {
     const source = '//@version=6\nindicator("test")\nplot(close)';
     const { stdout, exitCode } = run(['pine', 'check'], { input: source });
     assert.equal(exitCode, 0);
@@ -139,7 +154,7 @@ describe('CLI — pine check (server compile)', () => {
     assert.equal(result.compiled, true);
   });
 
-  it('returns errors for invalid Pine Script', () => {
+  maybe('returns errors for invalid Pine Script', () => {
     const source = '//@version=6\nindicator("test")\nplot(nonexistent_var)';
     const { stdout, exitCode } = run(['pine', 'check'], { input: source });
     assert.equal(exitCode, 0);
