@@ -18,6 +18,18 @@ export const MAX_RETRIES = 5;
 export const BASE_DELAY = 500;
 const BACKOFF_CAP = 30000;
 
+// ── Test-mode overrides ─────────────────────────────────────────────────
+// Unit tests install mocks here so core/* modules (which import evaluate,
+// getClient, getChartApi etc. at module load time) don't need a live CDP.
+// Production code never touches this — overrides default to null.
+let _testOverrides = null;
+
+/** Install test mocks. Pass null to reset. */
+export function __setTestOverrides(mocks) {
+  _testOverrides = mocks;
+}
+export function __getTestOverrides() { return _testOverrides; }
+
 /**
  * Compute the backoff delay (ms) for an attempt using exponential strategy
  * capped at BACKOFF_CAP. Attempt 0 → BASE_DELAY, attempt N → BASE_DELAY*2^N.
@@ -86,6 +98,7 @@ export function requireFinite(value, name) {
 }
 
 export async function getClient() {
+  if (_testOverrides?.getClient) return _testOverrides.getClient();
   if (client) {
     try {
       // Quick liveness check
@@ -124,6 +137,7 @@ async function findChartTarget() {
 }
 
 export async function getTargetInfo() {
+  if (_testOverrides?.getTargetInfo) return _testOverrides.getTargetInfo();
   if (!targetInfo) {
     await getClient();
   }
@@ -137,6 +151,7 @@ function isDisconnectError(err) {
 }
 
 export async function evaluate(expression, opts = {}) {
+  if (_testOverrides?.evaluate) return _testOverrides.evaluate(expression, opts);
   // First attempt. If the socket died underneath us, drop the client cache
   // and retry exactly once before bubbling the error up. This makes the
   // CLI and MCP tools self-healing across a TradingView restart.
@@ -168,6 +183,7 @@ export async function evaluate(expression, opts = {}) {
 }
 
 export async function evaluateAsync(expression) {
+  if (_testOverrides?.evaluateAsync) return _testOverrides.evaluateAsync(expression);
   return evaluate(expression, { awaitPromise: true });
 }
 
@@ -192,21 +208,26 @@ async function verifyAndReturn(path, name) {
 }
 
 export async function getChartApi() {
+  if (_testOverrides?.getChartApi) return _testOverrides.getChartApi();
   return verifyAndReturn(KNOWN_PATHS.chartApi, 'Chart API');
 }
 
 export async function getChartCollection() {
+  if (_testOverrides?.getChartCollection) return _testOverrides.getChartCollection();
   return verifyAndReturn(KNOWN_PATHS.chartWidgetCollection, 'Chart Widget Collection');
 }
 
 export async function getBottomBar() {
+  if (_testOverrides?.getBottomBar) return _testOverrides.getBottomBar();
   return verifyAndReturn(KNOWN_PATHS.bottomWidgetBar, 'Bottom Widget Bar');
 }
 
 export async function getReplayApi() {
+  if (_testOverrides?.getReplayApi) return _testOverrides.getReplayApi();
   return verifyAndReturn(KNOWN_PATHS.replayApi, 'Replay API');
 }
 
 export async function getMainSeriesBars() {
+  if (_testOverrides?.getMainSeriesBars) return _testOverrides.getMainSeriesBars();
   return verifyAndReturn(KNOWN_PATHS.mainSeriesBars, 'Main Series Bars');
 }
