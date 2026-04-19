@@ -11,6 +11,16 @@ export function register(name, config) {
   commands.set(name, config);
 }
 
+/** Test-only: look up a registered command (or subcommand) by path. */
+export function _getCommand(...path) {
+  let node = { subcommands: commands };
+  for (const p of path) {
+    node = node.subcommands?.get?.(p);
+    if (!node) return undefined;
+  }
+  return node;
+}
+
 function printHelp() {
   console.log('Usage: tv <command> [options]\n');
   console.log('Commands:');
