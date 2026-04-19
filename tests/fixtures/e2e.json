@@ -1,7 +1,0 @@
-{
-  "_meta": "Seed fixture — re-record with TV_FIXTURE_MODE=record npm run test:e2e:fixture",
-  "26c19af0b33481d8": {
-    "expression": "1 + 1",
-    "value": 2
-  }
-}
